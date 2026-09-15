@@ -23,6 +23,13 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Generate Fresh Android Scaffolding (v2 Embedding)
+        run: |
+          mkdir /tmp/scaffold
+          cd /tmp/scaffold
+          flutter create dummy_app --org com.fmcg.tally --platforms=android
+          cp -r dummy_app/android $GITHUB_WORKSPACE/
+
       - name: Install dependencies
         run: flutter pub get
 
