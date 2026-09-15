@@ -38,6 +38,20 @@ class Product {
   });
 }
 
+class Customer {
+  final String id;
+  final String name;
+  final String phone;
+  double balance; // Positive balance = Customer owes money (Udhar)
+
+  Customer({
+    required this.id,
+    required this.name,
+    required this.phone,
+    this.balance = 0.0,
+  });
+}
+
 class InvoiceItem {
   final Product product;
   int quantity;
@@ -55,6 +69,7 @@ class Invoice {
   final DateTime date;
   final List<InvoiceItem> items;
   final double grandTotal;
+  final bool isCredit;
 
   Invoice({
     required this.id,
@@ -62,6 +77,7 @@ class Invoice {
     required this.date,
     required this.items,
     required this.grandTotal,
+    required this.isCredit,
   });
 }
 
@@ -83,29 +99,48 @@ class _HomeScreenState extends State<HomeScreen> {
     Product(id: '4', name: 'Biscuits Carton', sku: 'SKU-004', stock: 8, purchasePrice: 420, salePrice: 500, gstPercent: 12),
   ];
 
+  final List<Customer> _customers = [
+    Customer(id: 'c1', name: 'Gupta Kirana Store', phone: '9876543210', balance: 4500.0),
+    Customer(id: 'c2', name: 'Sharma General Traders', phone: '9123456780', balance: 1200.0),
+    Customer(id: 'c3', name: 'Verma Supermarket', phone: '9988776655', balance: 0.0),
+  ];
+
   final List<Invoice> _invoices = [];
 
-  void _addInvoice(Invoice invoice) {
+  void _addInvoice(Invoice invoice, Customer? customer) {
     setState(() {
       _invoices.insert(0, invoice);
       for (var item in invoice.items) {
         final prod = _products.firstWhere((p) => p.id == item.product.id);
         prod.stock -= item.quantity;
       }
+      if (invoice.isCredit && customer != null) {
+        customer.balance += invoice.grandTotal;
+      }
+    });
+  }
+
+  void _recordPayment(Customer customer, double amount) {
+    setState(() {
+      customer.balance -= amount;
+      if (customer.balance < 0) customer.balance = 0;
     });
   }
 
   void _addProduct(Product p) {
-    setState(() {
-      _products.add(p);
-    });
+    setState(() => _products.add(p));
+  }
+
+  void _addCustomer(Customer c) {
+    setState(() => _customers.add(c));
   }
 
   @override
   Widget build(BuildContext context) {
     final screens = [
       InventoryScreen(products: _products, onAdd: _addProduct),
-      BillingScreen(products: _products, onInvoiceCreated: _addInvoice),
+      BillingScreen(products: _products, customers: _customers, onInvoiceCreated: _addInvoice),
+      KhataScreen(customers: _customers, onRecordPayment: _recordPayment, onAddCustomer: _addCustomer),
       LedgerScreen(invoices: _invoices),
     ];
 
@@ -116,8 +151,9 @@ class _HomeScreenState extends State<HomeScreen> {
         onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Stock'),
-          NavigationDestination(icon: Icon(Icons.point_of_sale), label: 'New Bill'),
-          NavigationDestination(icon: Icon(Icons.receipt_long), label: 'Ledger'),
+          NavigationDestination(icon: Icon(Icons.point_of_sale), label: 'POS Bill'),
+          NavigationDestination(icon: Icon(Icons.account_balance_wallet), label: 'Khata'),
+          NavigationDestination(icon: Icon(Icons.receipt_long), label: 'Invoices'),
         ],
       ),
     );
@@ -207,19 +243,21 @@ class InventoryScreen extends StatelessWidget {
   }
 }
 
-// ---------------- SCREEN 2: BILLING ----------------
+// ---------------- SCREEN 2: BILLING WITH KHATA OPTION ----------------
 class BillingScreen extends StatefulWidget {
   final List<Product> products;
-  final Function(Invoice) onInvoiceCreated;
+  final List<Customer> customers;
+  final Function(Invoice, Customer?) onInvoiceCreated;
 
-  const BillingScreen({super.key, required this.products, required this.onInvoiceCreated});
+  const BillingScreen({super.key, required this.products, required this.customers, required this.onInvoiceCreated});
 
   @override
   State<BillingScreen> createState() => _BillingScreenState();
 }
 
 class _BillingScreenState extends State<BillingScreen> {
-  final TextEditingController _customerCtrl = TextEditingController(text: 'Walk-in Retailer');
+  Customer? _selectedCustomer;
+  bool _isCreditBill = false;
   final List<InvoiceItem> _cart = [];
 
   void _addToCart(Product product) {
@@ -248,11 +286,22 @@ class _BillingScreenState extends State<BillingScreen> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: TextField(
-              controller: _customerCtrl,
-              decoration: const InputDecoration(labelText: 'Customer / Outlet Name', border: OutlineInputBorder()),
+            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+            child: DropdownButtonFormField<Customer>(
+              decoration: const InputDecoration(labelText: 'Select Retailer / Customer', border: OutlineInputBorder()),
+              value: _selectedCustomer,
+              items: widget.customers.map((c) {
+                return DropdownMenuItem(value: c, child: Text('${c.name} (Due: ₹${c.balance.toStringAsFixed(0)})'));
+              }).toList(),
+              onChanged: (val) => setState(() => _selectedCustomer = val),
             ),
+          ),
+          SwitchListTile(
+            title: const Text('Add to Udhar / Khata (Credit)'),
+            subtitle: Text(_isCreditBill ? 'Balance will be charged to customer ledger' : 'Paid in cash/UPI immediately'),
+            value: _isCreditBill,
+            activeColor: Colors.orange,
+            onChanged: (val) => setState(() => _isCreditBill = val),
           ),
           const Divider(),
           const Padding(
@@ -316,26 +365,32 @@ class _BillingScreenState extends State<BillingScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Grand Total:'),
-                    Text('₹${totalAmount.toStringAsFixed(2)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.teal)),
+                    Text(_isCreditBill ? 'Credit Amount:' : 'Cash Total:'),
+                    Text('₹${totalAmount.toStringAsFixed(2)}',
+                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: _isCreditBill ? Colors.orange.shade800 : Colors.teal)),
                   ],
                 ),
                 ElevatedButton.icon(
                   icon: const Icon(Icons.print),
-                  label: const Text('Generate Invoice'),
+                  label: const Text('Save & Bill'),
                   onPressed: _cart.isEmpty
                       ? null
                       : () {
+                          if (_isCreditBill && _selectedCustomer == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a customer for Khata / Credit bills!')));
+                            return;
+                          }
                           final inv = Invoice(
                             id: 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}',
-                            customerName: _customerCtrl.text,
+                            customerName: _selectedCustomer?.name ?? 'Cash Counter',
                             date: DateTime.now(),
                             items: List.from(_cart),
                             grandTotal: totalAmount,
+                            isCredit: _isCreditBill,
                           );
-                          widget.onInvoiceCreated(inv);
+                          widget.onInvoiceCreated(inv, _selectedCustomer);
                           setState(() => _cart.clear());
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Invoice ${inv.id} saved!')));
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Invoice ${inv.id} recorded successfully!')));
                         },
                 )
               ],
@@ -347,7 +402,151 @@ class _BillingScreenState extends State<BillingScreen> {
   }
 }
 
-// ---------------- SCREEN 3: LEDGER ----------------
+// ---------------- SCREEN 3: KHATA / CREDIT REGISTER ----------------
+class KhataScreen extends StatelessWidget {
+  final List<Customer> customers;
+  final Function(Customer, double) onRecordPayment;
+  final Function(Customer) onAddCustomer;
+
+  const KhataScreen({super.key, required this.customers, required this.onRecordPayment, required this.onAddCustomer});
+
+  void _showPaymentDialog(BuildContext context, Customer customer) {
+    final payCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Receive Payment: ${customer.name}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Current Due: ₹${customer.balance.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: payCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Amount Received (₹)', border: OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              final val = double.tryParse(payCtrl.text);
+              if (val != null && val > 0) {
+                onRecordPayment(customer, val);
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text('Record Payment'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddCustomerDialog(BuildContext context) {
+    final nameCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
+    final balCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add New Khata Customer'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Retailer / Firm Name')),
+            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Phone Number')),
+            TextField(controller: balCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Opening Balance (₹)')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              if (nameCtrl.text.isNotEmpty) {
+                onAddCustomer(Customer(
+                  id: DateTime.now().millisecondsSinceEpoch.toString(),
+                  name: nameCtrl.text,
+                  phone: phoneCtrl.text,
+                  balance: double.tryParse(balCtrl.text) ?? 0.0,
+                ));
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text('Save Customer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    double totalCreditOutstanding = customers.fold(0, (acc, c) => acc + c.balance);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Customer Khata & Credit')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAddCustomerDialog(context),
+        icon: const Icon(Icons.person_add),
+        label: const Text('New Khata'),
+      ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            color: Colors.red.shade50,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Total Market Udhar (Receivable):', style: TextStyle(fontSize: 14, color: Colors.grey)),
+                Text('₹${totalCreditOutstanding.toStringAsFixed(2)}',
+                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.red.shade700)),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: customers.length,
+              itemBuilder: (ctx, idx) {
+                final c = customers[idx];
+                final bool hasDue = c.balance > 0;
+                return Card(
+                  margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: hasDue ? Colors.red.shade100 : Colors.green.shade100,
+                      child: Icon(Icons.store, color: hasDue ? Colors.red : Colors.green),
+                    ),
+                    title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('Phone: ${c.phone}'),
+                    trailing: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text('₹${c.balance.toStringAsFixed(2)}',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: hasDue ? Colors.red : Colors.green)),
+                        Text(hasDue ? 'Udhar Due' : 'Cleared', style: TextStyle(fontSize: 11, color: hasDue ? Colors.red : Colors.green)),
+                      ],
+                    ),
+                    onTap: () => _showPaymentDialog(context, c),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------- SCREEN 4: INVOICE LEDGER ----------------
 class LedgerScreen extends StatelessWidget {
   final List<Invoice> invoices;
 
@@ -357,9 +556,9 @@ class LedgerScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final f = DateFormat('dd MMM, hh:mm a');
     return Scaffold(
-      appBar: AppBar(title: const Text('Sales Register / Ledger')),
+      appBar: AppBar(title: const Text('Invoice History')),
       body: invoices.isEmpty
-          ? const Center(child: Text('No invoices issued yet.'))
+          ? const Center(child: Text('No invoices recorded yet.'))
           : ListView.builder(
               itemCount: invoices.length,
               itemBuilder: (ctx, idx) {
@@ -367,8 +566,27 @@ class LedgerScreen extends StatelessWidget {
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   child: ExpansionTile(
-                    title: Text('${inv.customerName} - ₹${inv.grandTotal.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('${inv.id} • ${f.format(inv.date)}'),
+                    title: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(child: Text(inv.customerName, style: const TextStyle(fontWeight: FontWeight.bold))),
+                        Text('₹${inv.grandTotal.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    subtitle: Row(
+                      children: [
+                        Text('${inv.id} • ${f.format(inv.date)}  '),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: inv.isCredit ? Colors.orange.shade100 : Colors.green.shade100,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(inv.isCredit ? 'KHATA (UDHAR)' : 'PAID CASH',
+                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: inv.isCredit ? Colors.orange.shade900 : Colors.green.shade900)),
+                        )
+                      ],
+                    ),
                     children: inv.items
                         .map((item) => Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
